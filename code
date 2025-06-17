@@ -1,0 +1,293 @@
+// Project: FryRate
+// Description: A React + Firebase app that lets users rate and review French fries with multilevel regional rankings based on user's surrounding area (state > county > city)
+
+// === File: src/firebase.js ===
+import { initializeApp } from "firebase/app";
+import { getFirestore } from "firebase/firestore";
+import { getAuth } from "firebase/auth";
+
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_AUTH_DOMAIN",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_STORAGE_BUCKET",
+  messagingSenderId: "YOUR_MSG_SENDER_ID",
+  appId: "YOUR_APP_ID",
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+export { db, auth };
+
+// === File: src/components/FryCard.jsx ===
+import { useState } from "react";
+import { Star } from "lucide-react";
+
+const FryCard = ({ fry, onSubmit }) => {
+  const [rating, setRating] = useState(0);
+  const [comment, setComment] = useState("");
+
+  const handleSubmit = () => {
+    if (rating) {
+      onSubmit({ fryName: fry.name, state: fry.state, county: fry.county, city: fry.city, rating, comment });
+      setRating(0);
+      setComment("");
+    }
+  };
+
+  return (
+    <div className="bg-white p-4 rounded-2xl shadow mb-4">
+      <h2 className="text-xl font-bold">{fry.name} <span className="text-sm text-gray-500">({fry.city}, {fry.county}, {fry.state})</span></h2>
+      <div className="flex items-center my-2">
+        {[1, 2, 3, 4, 5].map((n) => (
+          <Star
+            key={n}
+            className={`w-6 h-6 cursor-pointer ${rating >= n ? "text-yellow-500" : "text-gray-300"}`}
+            onClick={() => setRating(n)}
+          />
+        ))}
+      </div>
+      <textarea
+        className="w-full border rounded p-2 mb-2"
+        placeholder="Write a comment..."
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+      />
+      <button
+        className="bg-yellow-500 text-white px-4 py-2 rounded"
+        onClick={handleSubmit}
+      >
+        Submit
+      </button>
+    </div>
+  );
+};
+
+export default FryCard;
+
+// === File: src/components/Auth.jsx ===
+import { useState } from "react";
+import { auth } from "../firebase";
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+} from "firebase/auth";
+
+const Auth = ({ setUser }) => {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isLogin, setIsLogin] = useState(true);
+
+  const handleAuth = async () => {
+    try {
+      const userCred = isLogin
+        ? await signInWithEmailAndPassword(auth, email, password)
+        : await createUserWithEmailAndPassword(auth, email, password);
+
+      setUser(userCred.user);
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  return (
+    <div className="max-w-md mx-auto p-4">
+      <h2 className="text-xl font-bold mb-2">{isLogin ? "Login" : "Sign Up"}</h2>
+      <input
+        type="email"
+        placeholder="Email"
+        className="w-full border p-2 mb-2"
+        onChange={(e) => setEmail(e.target.value)}
+      />
+      <input
+        type="password"
+        placeholder="Password"
+        className="w-full border p-2 mb-2"
+        onChange={(e) => setPassword(e.target.value)}
+      />
+      <button
+        className="bg-blue-500 text-white px-4 py-2 rounded w-full"
+        onClick={handleAuth}
+      >
+        {isLogin ? "Login" : "Sign Up"}
+      </button>
+      <p className="mt-2 text-sm">
+        {isLogin ? "Don't have an account?" : "Already have an account?"}
+        <button
+          className="text-blue-600 ml-1 underline"
+          onClick={() => setIsLogin(!isLogin)}
+        >
+          {isLogin ? "Sign Up" : "Login"}
+        </button>
+      </p>
+    </div>
+  );
+};
+
+export default Auth;
+
+// === File: src/App.jsx ===
+import { useState, useEffect } from "react";
+import FryCard from "./components/FryCard";
+import Auth from "./components/Auth";
+import { db, auth } from "./firebase";
+import { onAuthStateChanged } from "firebase/auth";
+import { collection, addDoc, getDocs, query } from "firebase/firestore";
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [fries, setFries] = useState([
+    { name: "McDonald's", state: "California", county: "Los Angeles", city: "Los Angeles" },
+    { name: "Five Guys", state: "Texas", county: "Travis", city: "Austin" },
+    { name: "In-N-Out", state: "California", county: "Orange", city: "Irvine" },
+    { name: "Shake Shack", state: "New York", county: "New York", city: "Manhattan" },
+    { name: "Wendy's", state: "Nevada", county: "Clark", city: "Las Vegas" },
+    { name: "Chick-fil-A", state: "Georgia", county: "Fulton", city: "Atlanta" },
+  ]);
+  const [rankings, setRankings] = useState({ state: {}, county: {}, city: {}, overall: {} });
+  const [locationAllowed, setLocationAllowed] = useState(true);
+  const [userReviews, setUserReviews] = useState([]);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    loadRankings();
+  }, [locationAllowed]);
+
+  useEffect(() => {
+    if (user) loadUserReviews();
+  }, [user]);
+
+  const loadRankings = async () => {
+    const snap = await getDocs(query(collection(db, "reviews")));
+    const regionData = { state: {}, county: {}, city: {}, overall: {} };
+
+    snap.forEach(doc => {
+      const { state, county, city, rating } = doc.data();
+
+      ["state", "county", "city"].forEach(level => {
+        const key = { state, county, city }[level];
+        if (!regionData[level][key]) regionData[level][key] = { total: 0, count: 0 };
+        regionData[level][key].total += rating;
+        regionData[level][key].count++;
+      });
+
+      if (!regionData.overall["All"])
+        regionData.overall["All"] = { total: 0, count: 0 };
+
+      regionData.overall["All"].total += rating;
+      regionData.overall["All"].count++;
+    });
+
+    const computed = {};
+    ["state", "county", "city", "overall"].forEach(level => {
+      computed[level] = {};
+      Object.entries(regionData[level]).forEach(([key, { total, count }]) => {
+        computed[level][key] = (total / count).toFixed(2);
+      });
+    });
+
+    setRankings(computed);
+  };
+
+  const loadUserReviews = async () => {
+    const snap = await getDocs(query(collection(db, "reviews")));
+    const reviews = [];
+
+    snap.forEach(doc => {
+      const data = doc.data();
+      if (data.userId === user.uid) {
+        reviews.push(data);
+      }
+    });
+
+    setUserReviews(reviews);
+  };
+
+  const submitReview = async ({ fryName, state, county, city, rating, comment }) => {
+    await addDoc(collection(db, "reviews"), {
+      fryName,
+      state,
+      county,
+      city,
+      rating,
+      comment,
+      userId: user.uid,
+      createdAt: new Date(),
+    });
+    alert("Review submitted!");
+    loadRankings();
+    loadUserReviews();
+  };
+
+  return (
+    <div className="max-w-xl mx-auto mt-10">
+      <h1 className="text-3xl font-bold text-center mb-6">🍟 FryRate</h1>
+      {!user ? (
+        <Auth setUser={setUser} />
+      ) : (
+        <>
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-xl font-semibold">Location Access</h2>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={locationAllowed}
+                onChange={() => setLocationAllowed(!locationAllowed)}
+              />
+              Enable location-based rankings
+            </label>
+          </div>
+
+          {locationAllowed && (
+            <>
+              <h2 className="text-xl font-semibold mb-2">Rankings by State</h2>
+              <ul className="mb-4">
+                {Object.entries(rankings.state).map(([region, avg]) => (
+                  <li key={region}>{region}: {avg} ⭐</li>
+                ))}
+              </ul>
+              <h2 className="text-xl font-semibold mb-2">Rankings by County</h2>
+              <ul className="mb-4">
+                {Object.entries(rankings.county).map(([region, avg]) => (
+                  <li key={region}>{region}: {avg} ⭐</li>
+                ))}
+              </ul>
+              <h2 className="text-xl font-semibold mb-2">Rankings by City</h2>
+              <ul className="mb-4">
+                {Object.entries(rankings.city).map(([region, avg]) => (
+                  <li key={region}>{region}: {avg} ⭐</li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          <h2 className="text-xl font-semibold mb-2">Overall Rankings</h2>
+          <ul className="mb-6">
+            {Object.entries(rankings.overall).map(([region, avg]) => (
+              <li key={region}>{region}: {avg} ⭐</li>
+            ))}
+          </ul>
+
+          <h2 className="text-xl font-semibold mb-2">Your Reviews</h2>
+          <ul className="mb-6">
+            {userReviews.map((review, i) => (
+              <li key={i}>{review.fryName} ({review.city}, {review.state}): {review.rating} ⭐ — {review.comment}</li>
+            ))}
+          </ul>
+
+          {fries.map((fry) => (
+            <FryCard key={fry.name} fry={fry} onSubmit={submitReview} />
+          ))}
+        </>
+      )}
+    </div>
+  );
+};
+
+export default App;
